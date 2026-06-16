@@ -17,20 +17,27 @@
 
 package org.keycloak;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.PublicKey;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.crypto.SecretKey;
 
 import org.keycloak.common.VerificationException;
+import org.keycloak.common.util.Base64Url;
 import org.keycloak.crypto.SignatureVerifierContext;
 import org.keycloak.exceptions.TokenNotActiveException;
 import org.keycloak.exceptions.TokenSignatureInvalidException;
+import org.keycloak.jose.JOSECriticalHeaders;
 import org.keycloak.jose.jws.AlgorithmType;
 import org.keycloak.jose.jws.JWSHeader;
 import org.keycloak.jose.jws.JWSInput;
@@ -39,7 +46,10 @@ import org.keycloak.jose.jws.crypto.ECDSAProvider;
 import org.keycloak.jose.jws.crypto.HMACProvider;
 import org.keycloak.jose.jws.crypto.RSAProvider;
 import org.keycloak.representations.JsonWebToken;
+import org.keycloak.util.JsonSerialization;
 import org.keycloak.util.TokenUtil;
+
+import com.fasterxml.jackson.databind.JsonNode;
 
 /**
  * @author <a href="mailto:bill@burkecentral.com">Bill Burke</a>
@@ -199,14 +209,91 @@ public class TokenVerifier<T extends JsonWebToken> {
     private boolean checkRealmUrl = true;
     private final LinkedList<Predicate<? super T>> checks = new LinkedList<>();
 
+    /**
+     * Registered JWS header parameters (RFC 7515 section 4.1), plus {@code crit} itself. A {@code crit} list must not
+     * name any of these: it is meant for extension parameters only (section 4.1.11). Any other parameter must be
+     * declared understood by the caller, otherwise the JWS is rejected.
+     */
+    private static final Set<String> REGISTERED_JWS_HEADER_PARAMETERS = Collections.unmodifiableSet(new HashSet<>(
+            Arrays.asList("alg", "jku", "jwk", "kid", "x5u", "x5c", "x5t", "x5t#S256", "typ", "cty", "crit")));
+
     private JWSInput jws;
     private T token;
+
+    private Set<String> understoodCriticalHeaders = Collections.emptySet();
 
     private SignatureVerifierContext verifier = null;
 
     public TokenVerifier<T> verifierContext(SignatureVerifierContext verifier) {
         this.verifier = verifier;
         return this;
+    }
+
+    /**
+     * Declares the {@code crit} extension header parameter names this caller knows how to process. A critical
+     * parameter must appear here; registered JOSE parameters are never allowed in {@code crit}.
+     */
+    public TokenVerifier<T> withUnderstoodCriticalHeaders(Set<String> names) {
+        this.understoodCriticalHeaders = names == null ? Collections.emptySet() : Collections.unmodifiableSet(new HashSet<>(names));
+        return this;
+    }
+
+    /**
+     * Enforces the {@code crit} (critical) header parameter of a JWS per RFC 7515 section 4.1.11, understanding no
+     * extension parameters. Since a {@code crit} list may only name extension parameters, any critical parameter
+     * causes rejection.
+     * <p>
+     * This is the entry point for the JWS trust boundaries that verify a {@link JWSInput} directly instead of going
+     * through {@link #verify()} (for example client-JWT, identity-broker and SD-JWT token validation).
+     */
+    public static void verifyCriticalHeaders(JWSInput jws) throws VerificationException {
+        verifyCriticalHeaders(jws, Collections.emptySet());
+    }
+
+    /**
+     * Enforces the {@code crit} (critical) header parameter of a JWS per RFC 7515 section 4.1.11.
+     *
+     * @param jws the parsed JWS whose protected header is checked
+     * @param understoodExtensions the extension header parameter names the recipient understands (registered JOSE
+     *                             parameters are never allowed in {@code crit})
+     */
+    public static void verifyCriticalHeaders(JWSInput jws, Set<String> understoodExtensions) throws VerificationException {
+        JWSHeader header = jws.getHeader();
+        if (header == null || header.getCritical() == null) {
+            return;
+        }
+        checkCriticalHeaders(header.getCritical(), presentHeaderParameters(jws), understoodExtensions);
+    }
+
+    /**
+     * Validates a {@code crit} (critical) header parameter list per RFC 7515 section 4.1.11. A {@code crit} list must
+     * not be empty, must not contain empty or duplicate entries, must not name a registered JOSE parameter (it is for
+     * extensions only), and every name it lists must be understood by the recipient and present in the protected
+     * header; otherwise the token is rejected.
+     *
+     * @param critical the {@code crit} header value, or {@code null} if absent
+     * @param presentHeaderParameters the names of the parameters actually present in the protected header
+     * @param understood the extension header parameter names the recipient understands
+     */
+    public static void checkCriticalHeaders(List<String> critical, Collection<String> presentHeaderParameters, Set<String> understood) throws VerificationException {
+        String error = JOSECriticalHeaders.validate(critical, presentHeaderParameters, REGISTERED_JWS_HEADER_PARAMETERS, understood);
+        if (error != null) {
+            throw new VerificationException(error);
+        }
+    }
+
+    private static Set<String> presentHeaderParameters(JWSInput jws) throws VerificationException {
+        try {
+            JsonNode rawHeader = JsonSerialization.mapper.readTree(Base64Url.decode(jws.getEncodedHeader()));
+            Set<String> names = new HashSet<>();
+            Iterator<String> it = rawHeader.fieldNames();
+            while (it.hasNext()) {
+                names.add(it.next());
+            }
+            return names;
+        } catch (IOException e) {
+            throw new VerificationException("Failed to parse the JOSE header", e);
+        }
     }
 
     protected TokenVerifier(String tokenString, Class<T> clazz) {
@@ -481,6 +568,7 @@ public class TokenVerifier<T extends JsonWebToken> {
         }
         if (jws != null) {
             verifySignature();
+            verifyCriticalHeaders(jws, understoodCriticalHeaders);
         }
 
         for (Predicate<? super T> check : checks) {

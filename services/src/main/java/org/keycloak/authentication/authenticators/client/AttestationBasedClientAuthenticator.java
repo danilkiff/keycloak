@@ -411,6 +411,9 @@ public class AttestationBasedClientAuthenticator extends AbstractClientAuthentic
             throw new TokenSignatureInvalidException(attestationJwt, "Invalid token signature");
         }
 
+        // RFC 7515 section 4.1.11: reject a JWS that relies on a critical header parameter we do not understand.
+        TokenVerifier.verifyCriticalHeaders(jws);
+
         abcaResult.setAttestationJwt(attestationJwt);
 
         // [TODO] The alg JOSE Header Parameter for both JWTs indicates a registered asymmetric digital signature algorithm
@@ -487,6 +490,9 @@ public class AttestationBasedClientAuthenticator extends AbstractClientAuthentic
         if (!signatureProvider.verifier(clientKey).verify(data, jws.getSignature())) {
             throw new TokenSignatureInvalidException(attestationPoPJwt, "Invalid token signature");
         }
+
+        // RFC 7515 section 4.1.11: reject a JWS that relies on a critical header parameter we do not understand.
+        TokenVerifier.verifyCriticalHeaders(jws);
 
         abcaResult.setAttestationPoPJwt(attestationPoPJwt);
 

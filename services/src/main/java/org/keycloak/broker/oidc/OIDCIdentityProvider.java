@@ -38,6 +38,7 @@ import jakarta.ws.rs.core.UriInfo;
 
 import org.keycloak.OAuth2Constants;
 import org.keycloak.OAuthErrorException;
+import org.keycloak.TokenVerifier;
 import org.keycloak.authentication.ClientAuthenticationFlowContext;
 import org.keycloak.authentication.authenticators.client.FederatedJWTClientValidator;
 import org.keycloak.broker.jwtauthorizationgrant.JWTAuthorizationGrantIdentityProvider;
@@ -691,7 +692,16 @@ public class OIDCIdentityProvider extends AbstractOAuth2IdentityProvider<OIDCIde
     }
 
     protected boolean verify(JWSInput jws) {
-        if (!getConfig().isValidateSignature()) return true;
+        if (!getConfig().isValidateSignature()) {
+            // RFC 7515 section 4.1.11: enforce crit even when signature validation is disabled.
+            try {
+                TokenVerifier.verifyCriticalHeaders(jws);
+                return true;
+            } catch (Exception e) {
+                logger.debug("Failed to verify token critical headers", e);
+                return false;
+            }
+        }
         return verifySignature(jws);
     }
 
@@ -717,7 +727,12 @@ public class OIDCIdentityProvider extends AbstractOAuth2IdentityProvider<OIDCIde
                 return false;
             }
 
-            return signatureProvider.verifier(key).verify(jws.getEncodedSignatureInput().getBytes(StandardCharsets.UTF_8), jws.getSignature());
+            if (!signatureProvider.verifier(key).verify(jws.getEncodedSignatureInput().getBytes(StandardCharsets.UTF_8), jws.getSignature())) {
+                return false;
+            }
+            // RFC 7515 section 4.1.11: reject if the JWS relies on a critical header we do not understand.
+            TokenVerifier.verifyCriticalHeaders(jws);
+            return true;
         } catch (Exception e) {
             logger.debug("Failed to verify token", e);
             return false;

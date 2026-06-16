@@ -60,6 +60,9 @@ public class JWSHeader implements JOSEHeader {
     @JsonProperty("x5c")
     private List<String> x5c;
 
+    @JsonProperty("crit")
+    private List<String> critical;
+
     private Map<String, Object> otherClaims = new HashMap<>();
 
     public JWSHeader() {
@@ -148,6 +151,17 @@ public class JWSHeader implements JOSEHeader {
         } catch (CertificateEncodingException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    /**
+     * @return the {@code crit} (critical) header parameter as defined by RFC 7515 section 4.1.11, or {@code null}.
+     */
+    public List<String> getCritical() {
+        return critical;
+    }
+
+    public void setCritical(List<String> critical) {
+        this.critical = critical;
     }
 
     /**

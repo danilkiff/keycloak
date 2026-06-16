@@ -2,6 +2,7 @@ package org.keycloak.broker.spiffe;
 
 import java.nio.charset.StandardCharsets;
 
+import org.keycloak.TokenVerifier;
 import org.keycloak.authentication.ClientAuthenticationFlowContext;
 import org.keycloak.authentication.authenticators.client.AbstractJWTClientValidator;
 import org.keycloak.authentication.authenticators.client.FederatedJWTClientValidator;
@@ -85,7 +86,12 @@ public class SpiffeIdentityProvider implements ClientAssertionIdentityProvider<S
                 return false;
             }
 
-            return signatureProvider.verifier(publicKey).verify(jws.getEncodedSignatureInput().getBytes(StandardCharsets.UTF_8), jws.getSignature());
+            if (!signatureProvider.verifier(publicKey).verify(jws.getEncodedSignatureInput().getBytes(StandardCharsets.UTF_8), jws.getSignature())) {
+                return false;
+            }
+            // RFC 7515 section 4.1.11: reject if the JWS relies on a critical header we do not understand.
+            TokenVerifier.verifyCriticalHeaders(jws);
+            return true;
         } catch (Exception e) {
             LOGGER.debug("Failed to verify token signature", e);
             return false;

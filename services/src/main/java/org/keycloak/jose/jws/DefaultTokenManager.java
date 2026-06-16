@@ -27,6 +27,7 @@ import java.util.stream.Stream;
 
 import org.keycloak.Token;
 import org.keycloak.TokenCategory;
+import org.keycloak.TokenVerifier;
 import org.keycloak.common.util.SecretGenerator;
 import org.keycloak.common.util.Time;
 import org.keycloak.crypto.Algorithm;
@@ -113,7 +114,12 @@ public class DefaultTokenManager implements TokenManager {
             }
 
             boolean valid = signatureProvider.verifier(kid).verify(jws.getEncodedSignatureInput().getBytes(StandardCharsets.UTF_8), jws.getSignature());
-            return valid ? jws.readJsonContent(clazz) : null;
+            if (!valid) {
+                return null;
+            }
+            // RFC 7515 section 4.1.11: reject a token that relies on a critical header parameter we do not understand.
+            TokenVerifier.verifyCriticalHeaders(jws);
+            return jws.readJsonContent(clazz);
         } catch (Exception e) {
             logger.debug("Failed to decode token", e);
             return null;
@@ -178,6 +184,9 @@ public class DefaultTokenManager implements TokenManager {
 
     private <T> T verifyJWS(ClientModel client, Class<T> clazz, JWSInput jws, boolean allowNoneAlgorithm) {
         try {
+            // RFC 7515 section 4.1.11: reject before accepting the payload if a critical header is not understood.
+            TokenVerifier.verifyCriticalHeaders(jws);
+
             String signatureAlgorithm = jws.getHeader().getAlgorithm().name();
             ClientSignatureVerifierProvider signatureProvider = session.getProvider(ClientSignatureVerifierProvider.class, signatureAlgorithm);
 

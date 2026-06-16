@@ -21,6 +21,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 import org.keycloak.OID4VCConstants;
+import org.keycloak.TokenVerifier;
 import org.keycloak.common.VerificationException;
 import org.keycloak.crypto.SignatureSignerContext;
 import org.keycloak.crypto.SignatureVerifierContext;
@@ -83,6 +84,8 @@ public abstract class JwsToken {
                                  jwsInput.getSignature())) {
                 throw new VerificationException("Invalid jws signature");
             }
+            // RFC 7515 section 4.1.11: reject if the JWS relies on a critical header we do not understand.
+            TokenVerifier.verifyCriticalHeaders(jwsInput);
         } catch (Exception e) {
             throw new VerificationException(e);
         }
