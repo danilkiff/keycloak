@@ -55,6 +55,7 @@ import org.keycloak.common.Profile;
 import org.keycloak.common.util.Base64Url;
 import org.keycloak.common.util.SecretGenerator;
 import org.keycloak.common.util.Time;
+import org.keycloak.crypto.CekManagementHeaderParameters;
 import org.keycloak.crypto.KeyUse;
 import org.keycloak.crypto.KeyWrapper;
 import org.keycloak.crypto.SignatureProvider;
@@ -756,6 +757,7 @@ public class OIDCIdentityProvider extends AbstractOAuth2IdentityProvider<OIDCIde
                 }
 
                 jwe.getKeyStorage().setDecryptionKey(key.getPrivateKey());
+                CekManagementHeaderParameters.applyForDecryption(session, jwe);
                 jwe.verifyAndDecodeJwe();
                 String content = new String(jwe.getContent(), StandardCharsets.UTF_8);
 

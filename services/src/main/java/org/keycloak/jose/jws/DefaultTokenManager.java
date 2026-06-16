@@ -30,6 +30,7 @@ import org.keycloak.TokenCategory;
 import org.keycloak.common.util.SecretGenerator;
 import org.keycloak.common.util.Time;
 import org.keycloak.crypto.Algorithm;
+import org.keycloak.crypto.CekManagementHeaderParameters;
 import org.keycloak.crypto.CekManagementProvider;
 import org.keycloak.crypto.ClientSignatureVerifierProvider;
 import org.keycloak.crypto.ContentEncryptionProvider;
@@ -150,6 +151,7 @@ public class DefaultTokenManager implements TokenManager {
 
                 jwe.getKeyStorage().setDecryptionKey(privateKey);
 
+                CekManagementHeaderParameters.applyForDecryption(session, jwe);
                 byte[] content = jwe.verifyAndDecodeJwe().getContent();
 
                 try {

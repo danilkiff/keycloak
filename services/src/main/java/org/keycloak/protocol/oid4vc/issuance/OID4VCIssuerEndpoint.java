@@ -53,6 +53,7 @@ import org.keycloak.OID4VCConstants;
 import org.keycloak.VCFormat;
 import org.keycloak.common.Profile;
 import org.keycloak.common.VerificationException;
+import org.keycloak.crypto.CekManagementHeaderParameters;
 import org.keycloak.crypto.KeyUse;
 import org.keycloak.crypto.KeyWrapper;
 import org.keycloak.events.Details;
@@ -1208,6 +1209,7 @@ public class OID4VCIssuerEndpoint {
 
         // Decrypt the JWE
         try {
+            CekManagementHeaderParameters.applyForDecryption(session, jwe);
             jwe.verifyAndDecodeJwe();
         } catch (JWEException e) {
             throw new JWEException("Failed to decrypt JWE: " + e.getMessage());
