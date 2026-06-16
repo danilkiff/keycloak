@@ -18,6 +18,10 @@
 package org.keycloak.jose.jwe;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 
 import org.keycloak.common.util.Base64Url;
 import org.keycloak.jose.JOSE;
@@ -27,6 +31,9 @@ import org.keycloak.jose.jwe.alg.JWEAlgorithmProvider;
 import org.keycloak.jose.jwe.enc.JWEEncryptionProvider;
 import org.keycloak.util.JsonSerialization;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
  */
@@ -34,6 +41,12 @@ public class JWE implements JOSE {
 
     private JWEHeader header;
     private String base64Header;
+
+    /**
+     * Names of the provider-owned protected header parameters that the active algorithm provider has declared as
+     * owned. On decode, only these names are captured from the received header into {@link JWEHeader}.
+     */
+    private Set<String> providedHeaderParameters = Collections.emptySet();
 
     private JWEKeyStorage keyStorage = new JWEKeyStorage();
     private String base64Cek;
@@ -58,6 +71,20 @@ public class JWE implements JOSE {
         return this;
     }
 
+    /**
+     * Declares the set of provider-owned protected header parameter names for this JWE. The caller (typically the
+     * server-side decryption code) obtains this from the algorithm provider's factory. On decode, only these names
+     * are captured from the received header into {@link JWEHeader}. Anything not in this set is still ignored,
+     * exactly as before.
+     */
+    public JWE providedHeaderParameters(Set<String> providedHeaderParameters) {
+        // Defensive immutable snapshot: the caller may pass a shared, mutable set (e.g. a provider factory singleton).
+        this.providedHeaderParameters = providedHeaderParameters == null || providedHeaderParameters.isEmpty()
+                ? Collections.emptySet()
+                : Collections.unmodifiableSet(new LinkedHashSet<>(providedHeaderParameters));
+        return this;
+    }
+
     public JOSEHeader getHeader() {
         if (header == null && base64Header != null) {
             try {
@@ -72,10 +99,27 @@ public class JWE implements JOSE {
 
     public String getBase64Header() throws IOException {
         if (base64Header == null && header != null) {
-            byte[] contentBytes = JsonSerialization.writeValueAsBytes(header);
-            base64Header = Base64Url.encode(contentBytes);
+            base64Header = Base64Url.encode(serializeHeader(header));
         }
         return base64Header;
+    }
+
+    /**
+     * Serializes the protected header to its canonical JSON bytes. Provider-owned parameters (which are not mapped by
+     * Jackson) are merged into the header object after the standard parameters. Insertion order is preserved so the
+     * output is deterministic. When there are no provider-owned parameters this is byte-for-byte identical to the
+     * previous behavior.
+     */
+    private static byte[] serializeHeader(JWEHeader header) throws IOException {
+        Map<String, JsonNode> providerParameters = header.getOtherHeaderParameters();
+        if (providerParameters.isEmpty()) {
+            return JsonSerialization.writeValueAsBytes(header);
+        }
+        ObjectNode node = JsonSerialization.mapper.valueToTree(header);
+        for (Map.Entry<String, JsonNode> entry : providerParameters.entrySet()) {
+            node.set(entry.getKey(), entry.getValue());
+        }
+        return JsonSerialization.writeValueAsBytes(node);
     }
 
 
@@ -194,12 +238,46 @@ public class JWE implements JOSE {
 
         keyStorage.setEncryptionProvider(encryptionProvider);
 
+        processProtectedHeaderParameters();
+
         byte[] decodedCek = algorithmProvider.decodeCek(Base64Url.decode(base64Cek), keyStorage.getDecryptionKey(), this.header, encryptionProvider);
         keyStorage.setCEKBytes(decodedCek);
 
         encryptionProvider.verifyAndDecodeJwe(this);
 
         return this;
+    }
+
+    /**
+     * Captures provider-owned protected header parameters from the received header, before the algorithm provider
+     * gets to read the header.
+     * <p>
+     * The raw, received protected header bytes are reparsed here only to read parameter values; the bytes used as AAD
+     * for tag verification ({@link #base64Header}) are never recomputed, so the authentication tag stays valid.
+     */
+    private void processProtectedHeaderParameters() throws Exception {
+        if (header == null) {
+            return;
+        }
+
+        JsonNode rawHeader = JsonSerialization.mapper.readTree(Base64Url.decode(base64Header));
+
+        // Capture only the parameters a provider has declared as owned. Everything else stays ignored.
+        if (!providedHeaderParameters.isEmpty()) {
+            JWEHeaderBuilder builder = null;
+            for (String name : providedHeaderParameters) {
+                JsonNode value = rawHeader.get(name);
+                if (value != null) {
+                    if (builder == null) {
+                        builder = header.toBuilder();
+                    }
+                    builder.otherHeaderParameter(name, value);
+                }
+            }
+            if (builder != null) {
+                header = builder.build();
+            }
+        }
     }
 
     public JWE verifyAndDecodeJwe(String jweStr) throws JWEException {

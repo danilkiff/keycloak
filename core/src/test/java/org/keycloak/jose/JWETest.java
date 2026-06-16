@@ -20,6 +20,7 @@ package org.keycloak.jose;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.KeyPair;
+import java.util.Collections;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -30,13 +31,20 @@ import org.keycloak.jose.jwe.JWE;
 import org.keycloak.jose.jwe.JWEConstants;
 import org.keycloak.jose.jwe.JWEException;
 import org.keycloak.jose.jwe.JWEHeader;
+import org.keycloak.jose.jwe.JWEHeader.JWEHeaderBuilder;
 import org.keycloak.jose.jwe.JWEKeyStorage;
 import org.keycloak.jose.jwe.JWEUtils;
+import org.keycloak.jose.jwe.alg.DirectAlgorithmProvider;
 import org.keycloak.jose.jwe.alg.JWEAlgorithmProvider;
 import org.keycloak.jose.jwe.enc.AesCbcHmacShaJWEEncryptionProvider;
 import org.keycloak.jose.jwe.enc.AesGcmJWEEncryptionProvider;
 import org.keycloak.jose.jwe.enc.JWEEncryptionProvider;
 import org.keycloak.rule.CryptoInitRule;
+import org.keycloak.util.JsonSerialization;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 
 import org.junit.Assert;
 import org.junit.ClassRule;
@@ -338,6 +346,156 @@ public abstract class JWETest {
         System.out.println("Decoded content length: " + decodedContent.length());
 
         Assert.assertEquals(PAYLOAD, decodedContent);
+    }
+
+    // --- Provider-owned protected header parameters (keycloak/keycloak#50043) ---
+
+    private static final String TEST_PARAM = "urn:test:provider-param";
+    private static final String TEST_PARAM_VALUE = "provider-owned-seed";
+
+    /**
+     * A test algorithm provider that writes one provider-owned protected header parameter on
+     * encode, and reads it back on decode. It delegates the actual CEK handling to {@link DirectAlgorithmProvider},
+     * so the test exercises the header plumbing rather than any specific key-agreement scheme. This mirrors what a
+     * real external provider (for example a post-quantum KEM) would do with its extra header parameter.
+     */
+    private static class ProviderParamAlgorithmProvider implements JWEAlgorithmProvider {
+        private final DirectAlgorithmProvider delegate = new DirectAlgorithmProvider();
+        private boolean decodeInvoked;
+        private JsonNode parameterSeenOnDecode;
+
+        @Override
+        public byte[] decodeCek(byte[] encodedCek, Key encryptionKey, JWEHeader header, JWEEncryptionProvider encryptionProvider) throws Exception {
+            this.decodeInvoked = true;
+            this.parameterSeenOnDecode = header.getOtherHeaderParameter(TEST_PARAM);
+            return delegate.decodeCek(encodedCek, encryptionKey, header, encryptionProvider);
+        }
+
+        @Override
+        public byte[] encodeCek(JWEEncryptionProvider encryptionProvider, JWEKeyStorage keyStorage, Key encryptionKey, JWEHeaderBuilder headerBuilder) throws Exception {
+            headerBuilder.otherHeaderParameter(TEST_PARAM, TextNode.valueOf(TEST_PARAM_VALUE));
+            return delegate.encodeCek(encryptionProvider, keyStorage, encryptionKey, headerBuilder);
+        }
+    }
+
+    private JWE newDirectJwe() {
+        SecretKey aesKey = new SecretKeySpec(AES_128_KEY, "AES");
+        SecretKey hmacKey = new SecretKeySpec(HMAC_SHA256_KEY, "HMACSHA2");
+        JWE jwe = new JWE();
+        jwe.getKeyStorage()
+                .setCEKKey(aesKey, JWEKeyStorage.KeyUse.ENCRYPTION)
+                .setCEKKey(hmacKey, JWEKeyStorage.KeyUse.SIGNATURE);
+        return jwe;
+    }
+
+    @Test
+    public void testProviderOwnedHeaderParameterRoundTrip() throws Exception {
+        ProviderParamAlgorithmProvider algProvider = new ProviderParamAlgorithmProvider();
+        JWEEncryptionProvider encProvider = new AesCbcHmacShaJWEEncryptionProvider(JWEConstants.A128CBC_HS256);
+
+        JWEHeader header = new JWEHeader(JWEConstants.DIRECT, JWEConstants.A128CBC_HS256, null);
+        JWE jwe = newDirectJwe().header(header).content(PAYLOAD.getBytes(StandardCharsets.UTF_8));
+        String encoded = jwe.encodeJwe(algProvider, encProvider);
+
+        // The provider-owned parameter must be present in the protected (and therefore AAD-protected) header.
+        String protectedHeaderJson = new String(Base64Url.decode(encoded.split("\\.")[0]), StandardCharsets.UTF_8);
+        Assert.assertTrue("provider parameter must be in the protected header", protectedHeaderJson.contains(TEST_PARAM));
+        Assert.assertTrue(protectedHeaderJson.contains(TEST_PARAM_VALUE));
+
+        // A successful AEAD round-trip also proves the header bytes used as AAD were not changed on decode.
+        JWE decoder = newDirectJwe().providedHeaderParameters(Collections.singleton(TEST_PARAM));
+        decoder.verifyAndDecodeJwe(encoded, algProvider, encProvider);
+
+        Assert.assertEquals(PAYLOAD, new String(decoder.getContent(), StandardCharsets.UTF_8));
+        Assert.assertTrue(algProvider.decodeInvoked);
+        Assert.assertNotNull("provider must see its parameter on decode", algProvider.parameterSeenOnDecode);
+        Assert.assertEquals(TEST_PARAM_VALUE, algProvider.parameterSeenOnDecode.asText());
+    }
+
+    @Test
+    public void testTamperedProtectedHeaderFailsAuthentication() throws Exception {
+        ProviderParamAlgorithmProvider algProvider = new ProviderParamAlgorithmProvider();
+        JWEEncryptionProvider encProvider = new AesCbcHmacShaJWEEncryptionProvider(JWEConstants.A128CBC_HS256);
+
+        JWEHeader header = new JWEHeader(JWEConstants.DIRECT, JWEConstants.A128CBC_HS256, null);
+        String encoded = newDirectJwe().header(header).content(PAYLOAD.getBytes(StandardCharsets.UTF_8))
+                .encodeJwe(algProvider, encProvider);
+
+        // Tamper with the provider-owned parameter value in the protected header. Because the header bytes are the
+        // AAD, the authentication tag must no longer verify.
+        String[] parts = encoded.split("\\.");
+        ObjectNode tamperedHeader = (ObjectNode) JsonSerialization.mapper.readTree(Base64Url.decode(parts[0]));
+        tamperedHeader.set(TEST_PARAM, TextNode.valueOf("tampered-value"));
+        parts[0] = Base64Url.encode(JsonSerialization.writeValueAsBytes(tamperedHeader));
+        String tampered = String.join(".", parts);
+
+        JWE decoder = newDirectJwe().providedHeaderParameters(Collections.singleton(TEST_PARAM));
+        try {
+            decoder.verifyAndDecodeJwe(tampered, algProvider, encProvider);
+            Assert.fail("Expected JWEException: tampering with the protected header must break authentication");
+        } catch (JWEException expected) {
+            // expected
+        }
+    }
+
+    // --- Non-standard ephemeral key as a provider-owned parameter, keeping the strict epk field untouched ---
+
+    private static final String NONSTANDARD_EPK_PARAM = "urn:test:nonstandard-ephemeral-key";
+
+    /**
+     * A provider that carries an ephemeral public key on a non-NIST curve (brainpoolP256r1, with
+     * opaque coordinates) as its own protected header parameter. The standard {@code epk} field stays a strict
+     * {@link org.keycloak.jose.jwk.ECPublicJWK} and is left untouched, demonstrating the answer to discussion #50043
+     * question 3: external providers get a separate, provider-owned representation instead of loosening {@code epk}.
+     */
+    private static class NonStandardEphemeralKeyAlgorithmProvider implements JWEAlgorithmProvider {
+        private final DirectAlgorithmProvider delegate = new DirectAlgorithmProvider();
+        private JsonNode ephemeralKeySeenOnDecode;
+
+        static ObjectNode nonStandardEphemeralKey() {
+            ObjectNode epk = JsonSerialization.mapper.createObjectNode();
+            epk.put("kty", "EC");
+            epk.put("crv", "brainpoolP256r1");  // a non-NIST curve; JOSE registers no "crv" for it
+            epk.put("x", "AQIDBAUGBwgJCgsMDQ4PEA");   // opaque coordinate octets, not interpreted by Keycloak
+            epk.put("y", "EA8ODQwLCgkIBwYFBAMCAQ");
+            return epk;
+        }
+
+        @Override
+        public byte[] decodeCek(byte[] encodedCek, Key encryptionKey, JWEHeader header, JWEEncryptionProvider encryptionProvider) throws Exception {
+            this.ephemeralKeySeenOnDecode = header.getOtherHeaderParameter(NONSTANDARD_EPK_PARAM);
+            return delegate.decodeCek(encodedCek, encryptionKey, header, encryptionProvider);
+        }
+
+        @Override
+        public byte[] encodeCek(JWEEncryptionProvider encryptionProvider, JWEKeyStorage keyStorage, Key encryptionKey, JWEHeaderBuilder headerBuilder) throws Exception {
+            headerBuilder.otherHeaderParameter(NONSTANDARD_EPK_PARAM, nonStandardEphemeralKey());
+            return delegate.encodeCek(encryptionProvider, keyStorage, encryptionKey, headerBuilder);
+        }
+    }
+
+    @Test
+    public void testNonStandardEphemeralKeyAsProviderOwnedParameter() throws Exception {
+        NonStandardEphemeralKeyAlgorithmProvider algProvider = new NonStandardEphemeralKeyAlgorithmProvider();
+        JWEEncryptionProvider encProvider = new AesCbcHmacShaJWEEncryptionProvider(JWEConstants.A128CBC_HS256);
+
+        JWEHeader header = new JWEHeader(JWEConstants.DIRECT, JWEConstants.A128CBC_HS256, null);
+        String encoded = newDirectJwe().header(header).content(PAYLOAD.getBytes(StandardCharsets.UTF_8))
+                .encodeJwe(algProvider, encProvider);
+
+        String protectedHeaderJson = new String(Base64Url.decode(encoded.split("\\.")[0]), StandardCharsets.UTF_8);
+        Assert.assertTrue("non-standard curve must survive into the protected header", protectedHeaderJson.contains("brainpoolP256r1"));
+
+        JWE decoder = newDirectJwe().providedHeaderParameters(Collections.singleton(NONSTANDARD_EPK_PARAM));
+        decoder.verifyAndDecodeJwe(encoded, algProvider, encProvider);
+        JWEHeader decodedHeader = (JWEHeader) decoder.getHeader();
+
+        Assert.assertEquals(PAYLOAD, new String(decoder.getContent(), StandardCharsets.UTF_8));
+        // The strict ECPublicJWK epk path is never populated by the non-standard key.
+        Assert.assertNull("standard epk must stay strict and unused", decodedHeader.getEphemeralPublicKey());
+        // The non-standard ephemeral key round-trips byte-exact through the provider-owned channel.
+        Assert.assertNotNull(algProvider.ephemeralKeySeenOnDecode);
+        Assert.assertEquals(NonStandardEphemeralKeyAlgorithmProvider.nonStandardEphemeralKey(), algProvider.ephemeralKeySeenOnDecode);
     }
 
 }
