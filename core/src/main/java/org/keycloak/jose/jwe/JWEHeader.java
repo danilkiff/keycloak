@@ -19,6 +19,12 @@ package org.keycloak.jose.jwe;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
 
 import org.keycloak.jose.JOSEHeader;
 import org.keycloak.jose.jwk.ECPublicJWK;
@@ -27,6 +33,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
@@ -34,6 +41,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class JWEHeader implements JOSEHeader {
+
+    /**
+     * Registered JOSE protected header parameter names that this model maps itself. A provider-owned parameter must
+     * not reuse one of these names: doing so would let an external provider overwrite a standard protected header
+     * field (RFC 7515). The builder rejects such collisions.
+     */
+    static final Set<String> RESERVED_HEADER_PARAMETERS = Collections.unmodifiableSet(new HashSet<>(
+            Arrays.asList("alg", "enc", "zip", "typ", "cty", "kid", "epk", "apu", "apv")));
 
     @JsonProperty("alg")
     private String algorithm;
@@ -61,6 +76,17 @@ public class JWEHeader implements JOSEHeader {
 
     @JsonProperty("apv")
     private String agreementPartyVInfo;
+
+    /**
+     * Extra protected header parameters owned by a {@link org.keycloak.jose.jwe.alg.JWEAlgorithmProvider}.
+     * <p>
+     * These are intentionally NOT (de)serialized by Jackson. Auto-mapping (such as {@code @JsonAnySetter}) would
+     * make it too easy to accept attacker-controlled header fields by accident. Instead, {@link JWE} serializes the
+     * parameters present here on encode, and on decode only populates the names a provider has explicitly declared as
+     * owned (its allow-list). See {@link JWE#providedHeaderParameters(java.util.Set)}.
+     */
+    @JsonIgnore
+    private Map<String, JsonNode> otherHeaderParameters;
 
     public JWEHeader() {
     }
@@ -141,6 +167,21 @@ public class JWEHeader implements JOSEHeader {
         return agreementPartyVInfo;
     }
 
+    /**
+     * @return the provider-owned protected header parameters, never {@code null}. See {@link #otherHeaderParameters}.
+     */
+    @JsonIgnore
+    public Map<String, JsonNode> getOtherHeaderParameters() {
+        return otherHeaderParameters == null ? Collections.emptyMap() : otherHeaderParameters;
+    }
+
+    /**
+     * @return the value of a single provider-owned protected header parameter, or {@code null} if not present.
+     */
+    public JsonNode getOtherHeaderParameter(String name) {
+        return otherHeaderParameters == null ? null : otherHeaderParameters.get(name);
+    }
+
     private static final ObjectMapper mapper = new ObjectMapper();
 
     static {
@@ -159,7 +200,7 @@ public class JWEHeader implements JOSEHeader {
         return builder().algorithm(algorithm).encryptionAlgorithm(encryptionAlgorithm)
                 .compressionAlgorithm(compressionAlgorithm).type(type).contentType(contentType)
                 .keyId(keyId).ephemeralPublicKey(ephemeralPublicKey).agreementPartyUInfo(agreementPartyUInfo)
-                .agreementPartyVInfo(agreementPartyVInfo);
+                .agreementPartyVInfo(agreementPartyVInfo).otherHeaderParameters(otherHeaderParameters);
     }
 
     public static JWEHeaderBuilder builder() {
@@ -176,6 +217,7 @@ public class JWEHeader implements JOSEHeader {
         private ECPublicJWK ephemeralPublicKey = null;
         private String agreementPartyUInfo = null;
         private String agreementPartyVInfo = null;
+        private Map<String, JsonNode> otherHeaderParameters = null;
 
         public JWEHeaderBuilder algorithm(String algorithm) {
             this.algorithm = algorithm;
@@ -222,9 +264,38 @@ public class JWEHeader implements JOSEHeader {
             return this;
         }
 
+        public JWEHeaderBuilder otherHeaderParameters(Map<String, JsonNode> otherHeaderParameters) {
+            // Route every entry through the guarded single setter so a reserved name cannot slip in via the bulk path.
+            this.otherHeaderParameters = null;
+            if (otherHeaderParameters != null) {
+                for (Map.Entry<String, JsonNode> entry : otherHeaderParameters.entrySet()) {
+                    otherHeaderParameter(entry.getKey(), entry.getValue());
+                }
+            }
+            return this;
+        }
+
+        /**
+         * Sets a single provider-owned protected header parameter, creating the map if needed.
+         * Insertion order is preserved so that serialization is deterministic.
+         */
+        public JWEHeaderBuilder otherHeaderParameter(String name, JsonNode value) {
+            if (RESERVED_HEADER_PARAMETERS.contains(name)) {
+                throw new IllegalArgumentException("Provider-owned header parameter '" + name
+                        + "' must not reuse a registered JOSE protected header parameter name");
+            }
+            if (otherHeaderParameters == null) {
+                otherHeaderParameters = new LinkedHashMap<>();
+            }
+            otherHeaderParameters.put(name, value);
+            return this;
+        }
+
         public JWEHeader build() {
-            return new JWEHeader(algorithm, encryptionAlgorithm, compressionAlgorithm, keyId, contentType,
+            JWEHeader header = new JWEHeader(algorithm, encryptionAlgorithm, compressionAlgorithm, keyId, contentType,
                     type, ephemeralPublicKey, agreementPartyUInfo, agreementPartyVInfo);
+            header.otherHeaderParameters = otherHeaderParameters;
+            return header;
         }
     }
 }
