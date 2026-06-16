@@ -19,12 +19,15 @@ package org.keycloak.jose.jwe;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
 import org.keycloak.common.util.Base64Url;
 import org.keycloak.jose.JOSE;
+import org.keycloak.jose.JOSECriticalHeaders;
 import org.keycloak.jose.JOSEHeader;
 import org.keycloak.jose.jwe.JWEHeader.JWEHeaderBuilder;
 import org.keycloak.jose.jwe.alg.JWEAlgorithmProvider;
@@ -249,8 +252,8 @@ public class JWE implements JOSE {
     }
 
     /**
-     * Captures provider-owned protected header parameters from the received header, before the algorithm provider
-     * gets to read the header.
+     * Enforces {@code crit} and captures provider-owned protected header parameters from the received header, before
+     * the algorithm provider gets to read the header.
      * <p>
      * The raw, received protected header bytes are reparsed here only to read parameter values; the bytes used as AAD
      * for tag verification ({@link #base64Header}) are never recomputed, so the authentication tag stays valid.
@@ -261,6 +264,18 @@ public class JWE implements JOSE {
         }
 
         JsonNode rawHeader = JsonSerialization.mapper.readTree(Base64Url.decode(base64Header));
+
+        // RFC 7515 section 4.1.11: reject the token if it relies on a critical parameter we do not understand.
+        Set<String> presentHeaderParameters = new HashSet<>();
+        Iterator<String> fieldNames = rawHeader.fieldNames();
+        while (fieldNames.hasNext()) {
+            presentHeaderParameters.add(fieldNames.next());
+        }
+        String critError = JOSECriticalHeaders.validate(header.getCritical(), presentHeaderParameters,
+                JWEHeader.RESERVED_HEADER_PARAMETERS, providedHeaderParameters);
+        if (critError != null) {
+            throw new JWEException(critError);
+        }
 
         // Capture only the parameters a provider has declared as owned. Everything else stays ignored.
         if (!providedHeaderParameters.isEmpty()) {

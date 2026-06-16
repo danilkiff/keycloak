@@ -373,7 +373,7 @@ public abstract class JWETest {
 
         @Override
         public byte[] encodeCek(JWEEncryptionProvider encryptionProvider, JWEKeyStorage keyStorage, Key encryptionKey, JWEHeaderBuilder headerBuilder) throws Exception {
-            headerBuilder.otherHeaderParameter(TEST_PARAM, TextNode.valueOf(TEST_PARAM_VALUE));
+            headerBuilder.addCritical(TEST_PARAM).otherHeaderParameter(TEST_PARAM, TextNode.valueOf(TEST_PARAM_VALUE));
             return delegate.encodeCek(encryptionProvider, keyStorage, encryptionKey, headerBuilder);
         }
     }
@@ -401,6 +401,7 @@ public abstract class JWETest {
         String protectedHeaderJson = new String(Base64Url.decode(encoded.split("\\.")[0]), StandardCharsets.UTF_8);
         Assert.assertTrue("provider parameter must be in the protected header", protectedHeaderJson.contains(TEST_PARAM));
         Assert.assertTrue(protectedHeaderJson.contains(TEST_PARAM_VALUE));
+        Assert.assertTrue("crit must be in the protected header", protectedHeaderJson.contains("\"crit\""));
 
         // A successful AEAD round-trip also proves the header bytes used as AAD were not changed on decode.
         JWE decoder = newDirectJwe().providedHeaderParameters(Collections.singleton(TEST_PARAM));
@@ -410,6 +411,79 @@ public abstract class JWETest {
         Assert.assertTrue(algProvider.decodeInvoked);
         Assert.assertNotNull("provider must see its parameter on decode", algProvider.parameterSeenOnDecode);
         Assert.assertEquals(TEST_PARAM_VALUE, algProvider.parameterSeenOnDecode.asText());
+    }
+
+    @Test
+    public void testCriticalParameterRejectedWhenNotUnderstood() throws Exception {
+        ProviderParamAlgorithmProvider algProvider = new ProviderParamAlgorithmProvider();
+        JWEEncryptionProvider encProvider = new AesCbcHmacShaJWEEncryptionProvider(JWEConstants.A128CBC_HS256);
+
+        JWEHeader header = new JWEHeader(JWEConstants.DIRECT, JWEConstants.A128CBC_HS256, null);
+        String encoded = newDirectJwe().header(header).content(PAYLOAD.getBytes(StandardCharsets.UTF_8))
+                .encodeJwe(algProvider, encProvider);
+
+        // Decode without declaring the parameter as owned: crit names a parameter nobody understands -> reject.
+        JWE decoder = newDirectJwe();
+        try {
+            decoder.verifyAndDecodeJwe(encoded, algProvider, encProvider);
+            Assert.fail("Expected JWEException: the critical header parameter is not understood");
+        } catch (JWEException expected) {
+            Assert.assertTrue("rejection must be about the critical parameter",
+                    expected.getCause() != null && expected.getCause().getMessage().contains("critical"));
+        }
+    }
+
+    @Test
+    public void testDuplicateCriticalParameterRejected() throws Exception {
+        ProviderParamAlgorithmProvider algProvider = new ProviderParamAlgorithmProvider();
+        JWEEncryptionProvider encProvider = new AesCbcHmacShaJWEEncryptionProvider(JWEConstants.A128CBC_HS256);
+
+        JWEHeader header = new JWEHeader(JWEConstants.DIRECT, JWEConstants.A128CBC_HS256, null);
+        String encoded = newDirectJwe().header(header).content(PAYLOAD.getBytes(StandardCharsets.UTF_8))
+                .encodeJwe(algProvider, encProvider);
+
+        // Force a duplicate entry into the 'crit' list of the protected header.
+        String[] parts = encoded.split("\\.");
+        ObjectNode tamperedHeader = (ObjectNode) JsonSerialization.mapper.readTree(Base64Url.decode(parts[0]));
+        tamperedHeader.putArray("crit").add(TEST_PARAM).add(TEST_PARAM);
+        parts[0] = Base64Url.encode(JsonSerialization.writeValueAsBytes(tamperedHeader));
+        String tampered = String.join(".", parts);
+
+        // crit is enforced before AEAD verification, so the duplicate is rejected regardless of the now-broken tag.
+        JWE decoder = newDirectJwe().providedHeaderParameters(Collections.singleton(TEST_PARAM));
+        try {
+            decoder.verifyAndDecodeJwe(tampered, algProvider, encProvider);
+            Assert.fail("Expected JWEException for a duplicate 'crit' entry");
+        } catch (JWEException expected) {
+            Assert.assertTrue("rejection must be about the duplicate crit entry",
+                    expected.getCause() != null && expected.getCause().getMessage().contains("duplicate"));
+        }
+    }
+
+    @Test
+    public void testRegisteredCriticalParameterRejected() throws Exception {
+        ProviderParamAlgorithmProvider algProvider = new ProviderParamAlgorithmProvider();
+        JWEEncryptionProvider encProvider = new AesCbcHmacShaJWEEncryptionProvider(JWEConstants.A128CBC_HS256);
+
+        JWEHeader header = new JWEHeader(JWEConstants.DIRECT, JWEConstants.A128CBC_HS256, null);
+        String encoded = newDirectJwe().header(header).content(PAYLOAD.getBytes(StandardCharsets.UTF_8))
+                .encodeJwe(algProvider, encProvider);
+
+        // Tamper crit to name a registered JOSE header parameter ("enc"); crit is for extensions only.
+        String[] parts = encoded.split("\\.");
+        ObjectNode tamperedHeader = (ObjectNode) JsonSerialization.mapper.readTree(Base64Url.decode(parts[0]));
+        tamperedHeader.putArray("crit").add("enc");
+        parts[0] = Base64Url.encode(JsonSerialization.writeValueAsBytes(tamperedHeader));
+        String tampered = String.join(".", parts);
+
+        JWE decoder = newDirectJwe().providedHeaderParameters(Collections.singleton(TEST_PARAM));
+        try {
+            decoder.verifyAndDecodeJwe(tampered, algProvider, encProvider);
+            Assert.fail("Expected JWEException: 'crit' must not list a registered header parameter");
+        } catch (JWEException expected) {
+            Assert.assertTrue("rejection must be about the registered crit entry",
+                    expected.getCause() != null && expected.getCause().getMessage().contains("registered"));
+        }
     }
 
     @Test
