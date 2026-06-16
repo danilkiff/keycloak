@@ -17,6 +17,7 @@
 
 package org.keycloak.jose.jwe;
 
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -34,7 +35,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 /**
- * Unit tests for the provider-owned JWE protected header parameters on the {@link JWEHeader} model.
+ * Unit tests for the JWE protected header model extensions: {@code crit} and provider-owned header parameters.
  * This does not require a crypto provider, so it can run directly in keycloak-core.
  */
 public class JWEHeaderTest {
@@ -51,26 +52,30 @@ public class JWEHeaderTest {
     }
 
     @Test
-    public void builderCarriesProviderParameters() {
+    public void builderCarriesCriticalAndProviderParameters() {
         JWEHeader header = JWEHeader.builder()
                 .algorithm("EXAMPLE-KEM")
                 .encryptionAlgorithm("EXAMPLE-ENC")
+                .addCritical("urn:example:seed")
                 .otherHeaderParameter("urn:example:seed", TextNode.valueOf("AAECAwQFBgc"))
                 .build();
 
+        assertEquals(Arrays.asList("urn:example:seed"), header.getCritical());
         assertEquals("AAECAwQFBgc", header.getOtherHeaderParameter("urn:example:seed").asText());
         assertEquals(1, header.getOtherHeaderParameters().size());
     }
 
     @Test
-    public void toBuilderRoundTripsProviderParameters() {
+    public void toBuilderRoundTripsCriticalAndProviderParameters() {
         JWEHeader original = JWEHeader.builder()
                 .algorithm("EXAMPLE-KEM")
+                .addCritical("urn:example:seed")
                 .otherHeaderParameter("urn:example:seed", TextNode.valueOf("seed-value"))
                 .build();
 
         JWEHeader copy = original.toBuilder().build();
 
+        assertEquals(original.getCritical(), copy.getCritical());
         assertEquals("seed-value", copy.getOtherHeaderParameter("urn:example:seed").asText());
     }
 
@@ -78,21 +83,26 @@ public class JWEHeaderTest {
     public void emptyAccessorsAreSafe() {
         JWEHeader header = JWEHeader.builder().algorithm("dir").build();
 
+        assertNull(header.getCritical());
         assertNotNull(header.getOtherHeaderParameters());
         assertTrue(header.getOtherHeaderParameters().isEmpty());
         assertNull(header.getOtherHeaderParameter("anything"));
     }
 
     @Test
-    public void providerParametersAreNotAutoSerialized() throws Exception {
+    public void criticalIsSerializedButProviderParametersAreNotAutoSerialized() throws Exception {
         JWEHeader header = JWEHeader.builder()
                 .algorithm("EXAMPLE-KEM")
                 .encryptionAlgorithm("EXAMPLE-ENC")
+                .addCritical("urn:example:seed")
                 .otherHeaderParameter("urn:example:seed", TextNode.valueOf("seed-value"))
                 .build();
 
         String json = JsonSerialization.writeValueAsString(header);
 
+        // crit is a standard JOSE parameter and is serialized by the model itself
+        assertTrue("crit must be serialized", json.contains("\"crit\""));
+        assertTrue(json.contains("urn:example:seed"));
         // The provider-owned VALUE must NOT be emitted by the header model; JWE is responsible for merging it
         // into the protected header. This guards against an accidental @JsonAnyGetter-style leak.
         assertFalse("provider parameter value must not be auto-serialized", json.contains("seed-value"));
@@ -121,6 +131,19 @@ public class JWEHeaderTest {
             fail("Expected IllegalArgumentException: the bulk setter must reject a reserved header parameter name");
         } catch (IllegalArgumentException expected) {
             // expected
+        }
+    }
+
+    @Test
+    public void registeredJoseAndJwaNamesAreAllReserved() {
+        // The reserved set must also cover the registered names this model does not map itself (RFC 7516/7518).
+        for (String name : Arrays.asList("jku", "jwk", "x5u", "x5c", "x5t", "x5t#S256", "p2s", "p2c", "iv", "tag")) {
+            try {
+                JWEHeader.builder().otherHeaderParameter(name, TextNode.valueOf("x"));
+                fail("Expected IllegalArgumentException for reserved header parameter '" + name + "'");
+            } catch (IllegalArgumentException expected) {
+                // expected
+            }
         }
     }
 }

@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -43,12 +44,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 public class JWEHeader implements JOSEHeader {
 
     /**
-     * Registered JOSE protected header parameter names that this model maps itself. A provider-owned parameter must
-     * not reuse one of these names: doing so would let an external provider overwrite a standard protected header
-     * field (RFC 7515). The builder rejects such collisions.
+     * Registered JWE header parameter names (RFC 7516 section 4.1) plus the algorithm-specific names of RFC 7518
+     * (sections 4.6.1, 4.7.1, 4.8.1). A provider-owned parameter must not reuse one of these, and {@code crit} must
+     * not list one, so a provider cannot claim a standard header name as its own.
      */
-    static final Set<String> RESERVED_HEADER_PARAMETERS = Collections.unmodifiableSet(new HashSet<>(
-            Arrays.asList("alg", "enc", "zip", "typ", "cty", "kid", "epk", "apu", "apv")));
+    static final Set<String> RESERVED_HEADER_PARAMETERS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+            "alg", "enc", "zip", "jku", "jwk", "kid", "x5u", "x5c", "x5t", "x5t#S256", "typ", "cty", "crit",
+            "epk", "apu", "apv", "iv", "tag", "p2s", "p2c")));
 
     @JsonProperty("alg")
     private String algorithm;
@@ -76,6 +78,9 @@ public class JWEHeader implements JOSEHeader {
 
     @JsonProperty("apv")
     private String agreementPartyVInfo;
+
+    @JsonProperty("crit")
+    private List<String> critical;
 
     /**
      * Extra protected header parameters owned by a {@link org.keycloak.jose.jwe.alg.JWEAlgorithmProvider}.
@@ -168,6 +173,13 @@ public class JWEHeader implements JOSEHeader {
     }
 
     /**
+     * @return the {@code crit} (critical) header parameter as defined by RFC 7515 section 4.1.11, or {@code null}.
+     */
+    public List<String> getCritical() {
+        return critical;
+    }
+
+    /**
      * @return the provider-owned protected header parameters, never {@code null}. See {@link #otherHeaderParameters}.
      */
     @JsonIgnore
@@ -200,7 +212,7 @@ public class JWEHeader implements JOSEHeader {
         return builder().algorithm(algorithm).encryptionAlgorithm(encryptionAlgorithm)
                 .compressionAlgorithm(compressionAlgorithm).type(type).contentType(contentType)
                 .keyId(keyId).ephemeralPublicKey(ephemeralPublicKey).agreementPartyUInfo(agreementPartyUInfo)
-                .agreementPartyVInfo(agreementPartyVInfo).otherHeaderParameters(otherHeaderParameters);
+                .agreementPartyVInfo(agreementPartyVInfo).critical(critical).otherHeaderParameters(otherHeaderParameters);
     }
 
     public static JWEHeaderBuilder builder() {
@@ -217,6 +229,7 @@ public class JWEHeader implements JOSEHeader {
         private ECPublicJWK ephemeralPublicKey = null;
         private String agreementPartyUInfo = null;
         private String agreementPartyVInfo = null;
+        private List<String> critical = null;
         private Map<String, JsonNode> otherHeaderParameters = null;
 
         public JWEHeaderBuilder algorithm(String algorithm) {
@@ -264,6 +277,24 @@ public class JWEHeader implements JOSEHeader {
             return this;
         }
 
+        public JWEHeaderBuilder critical(List<String> critical) {
+            this.critical = critical;
+            return this;
+        }
+
+        /**
+         * Marks a single header parameter name as critical ({@code crit}), creating the list if needed.
+         */
+        public JWEHeaderBuilder addCritical(String name) {
+            if (critical == null) {
+                critical = new java.util.ArrayList<>();
+            }
+            if (!critical.contains(name)) {
+                critical.add(name);
+            }
+            return this;
+        }
+
         public JWEHeaderBuilder otherHeaderParameters(Map<String, JsonNode> otherHeaderParameters) {
             // Route every entry through the guarded single setter so a reserved name cannot slip in via the bulk path.
             this.otherHeaderParameters = null;
@@ -294,6 +325,7 @@ public class JWEHeader implements JOSEHeader {
         public JWEHeader build() {
             JWEHeader header = new JWEHeader(algorithm, encryptionAlgorithm, compressionAlgorithm, keyId, contentType,
                     type, ephemeralPublicKey, agreementPartyUInfo, agreementPartyVInfo);
+            header.critical = critical;
             header.otherHeaderParameters = otherHeaderParameters;
             return header;
         }
