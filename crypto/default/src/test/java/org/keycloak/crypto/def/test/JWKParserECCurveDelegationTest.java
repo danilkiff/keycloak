@@ -111,7 +111,7 @@ public class JWKParserECCurveDelegationTest {
 
     @Test
     public void advertisedCurveWithPointNotOnCurveIsRejected() throws Exception {
-        // A provider that opts a curve in owns its validation: a point not on the curve must be rejected.
+        // Core explicitly validates the point lies on the curve, independent of the key factory.
         CryptoIntegration.setProvider(providerAdvertising(defaultProvider, "brainpoolP256r1"));
         try {
             ObjectNode jwk = (ObjectNode) JsonSerialization.mapper.readTree(readResource("brainpool-public-jwk.json"));
@@ -120,9 +120,10 @@ public class JWKParserECCurveDelegationTest {
             jwk.put("y", Base64Url.encode(yBytes));
             try {
                 JWKParser.create().parse(jwk.toString()).toPublicKey();
-                fail("a point not on the advertised curve must be rejected (provider owns curve validation)");
-            } catch (RuntimeException expected) {
-                // rejected, as required
+                fail("a point not on the advertised curve must be rejected");
+            } catch (RuntimeException e) {
+                assertTrue("expected core's point-on-curve rejection, got: " + e.getMessage(),
+                        String.valueOf(e.getMessage()).contains("not on the curve"));
             }
         } finally {
             CryptoIntegration.setProvider(defaultProvider);

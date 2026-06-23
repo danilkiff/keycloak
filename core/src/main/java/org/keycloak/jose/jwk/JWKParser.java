@@ -20,9 +20,11 @@ package org.keycloak.jose.jwk;
 import java.math.BigInteger;
 import java.security.KeyFactory;
 import java.security.PublicKey;
+import java.security.spec.ECFieldFp;
 import java.security.spec.ECParameterSpec;
 import java.security.spec.ECPoint;
 import java.security.spec.ECPublicKeySpec;
+import java.security.spec.EllipticCurve;
 import java.security.spec.RSAPublicKeySpec;
 
 import org.keycloak.common.crypto.CryptoIntegration;
@@ -106,6 +108,7 @@ public class JWKParser {
         BigInteger y = new BigInteger(1, Base64Url.decode(yStr));
 
         String name;
+        boolean nonStandardCurve = false;
         switch (crv) {
             case "P-256" :
                 name = "secp256r1";
@@ -117,19 +120,25 @@ public class JWKParser {
                 name = "secp521r1";
                 break;
             default :
-                // accept only a curve the active CryptoProvider explicitly advertises. The provider owns the curve,
-                // including validating that the supplied point lies on it. The advertised name must be one
-                // the provider can resolve to curve parameters; anything else is rejected
+                // accept only a curve the active CryptoProvider explicitly advertises. The advertised name
+                // must be one the provider can resolve to curve parameters; anything else is rejected
                 if (!CryptoIntegration.getProvider().getSupportedECCurves().contains(crv)) {
                     throw new RuntimeException("Unsupported curve");
                 }
                 name = crv;
+                nonStandardCurve = true;
         }
 
         // createECParams returns null for a curve the active provider does not support
         ECParameterSpec params = CryptoIntegration.getProvider().createECParams(name);
         if (params == null) {
             throw new RuntimeException("Unsupported curve");
+        }
+
+        if (nonStandardCurve) {
+            // Explicitly validate that the point lies on the curve for a provider-advertised curve, so the
+            // guarantee does not depend on the key factory's behavior. P-256/384/521 are unchanged.
+            checkPointOnCurve(x, y, params);
         }
 
         try {
@@ -141,6 +150,30 @@ public class JWKParser {
             return kf.generatePublic(pubKeySpec);
         } catch (Exception e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Verifies that the affine point {@code (x, y)} lies on the prime-field curve described by
+     * {@code params} ({@code y^2 == x^3 + a*x + b mod p}, with both coordinates in {@code [0, p)}).
+     * Throws if the point is not on the curve, so an invalid point is rejected by core rather than
+     * relying on the key factory.
+     */
+    private static void checkPointOnCurve(BigInteger x, BigInteger y, ECParameterSpec params) {
+        EllipticCurve curve = params.getCurve();
+        if (!(curve.getField() instanceof ECFieldFp)) {
+            // Only prime-field curves can be validated here; reject what cannot be checked.
+            throw new RuntimeException("Unsupported curve");
+        }
+        BigInteger p = ((ECFieldFp) curve.getField()).getP();
+        if (x.signum() < 0 || x.compareTo(p) >= 0 || y.signum() < 0 || y.compareTo(p) >= 0) {
+            throw new RuntimeException("EC public key point is not on the curve");
+        }
+        BigInteger lhs = y.modPow(BigInteger.valueOf(2), p);
+        BigInteger rhs = x.modPow(BigInteger.valueOf(3), p)
+                .add(curve.getA().multiply(x)).add(curve.getB()).mod(p);
+        if (!lhs.equals(rhs)) {
+            throw new RuntimeException("EC public key point is not on the curve");
         }
     }
 
