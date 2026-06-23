@@ -105,7 +105,10 @@ public class DefaultCryptoProvider implements CryptoProvider {
     @Override
     public ECParameterSpec createECParams(String curveName) {
         ECNamedCurveParameterSpec spec = ECNamedCurveTable.getParameterSpec(curveName);
-        return new ECNamedCurveSpec("prime256v1", spec.getCurve(), spec.getG(), spec.getN());
+        if (spec == null) {
+            return null;
+        }
+        return new ECNamedCurveSpec(curveName, spec.getCurve(), spec.getG(), spec.getN());
     }
 
     @Override

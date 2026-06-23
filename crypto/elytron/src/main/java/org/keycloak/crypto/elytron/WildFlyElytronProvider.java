@@ -33,6 +33,7 @@ import java.security.cert.CollectionCertStoreParameters;
 import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.ECParameterSpec;
+import java.security.spec.InvalidParameterSpecException;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PSSParameterSpec;
 import java.util.Map;
@@ -117,6 +118,9 @@ public class WildFlyElytronProvider implements CryptoProvider {
             params = AlgorithmParameters.getInstance("EC");
             params.init(new ECGenParameterSpec(curveName));
             return params.getParameterSpec(ECParameterSpec.class);
+        } catch (InvalidParameterSpecException e) {
+            // Curve not supported by this provider.
+            return null;
         } catch (Exception e) {
             throw new RuntimeException("Failed to generate EC parameter spec", e);
         }

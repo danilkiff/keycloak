@@ -152,6 +152,9 @@ public class FIPS1402Provider implements CryptoProvider {
     @Override
     public ECParameterSpec createECParams(String curveName) {
         X9ECParameters params = ECNamedCurveTable.getByName(curveName);
+        if (params == null) {
+            return null;
+        }
         ECField field ;
         ECCurve ecCurve = params.getCurve();
         if (ecCurve instanceof ECCurve.F2m) {

@@ -117,13 +117,24 @@ public class JWKParser {
                 name = "secp521r1";
                 break;
             default :
-                throw new RuntimeException("Unsupported curve");
+                // accept only a curve the active CryptoProvider explicitly advertises. The provider owns the curve,
+                // including validating that the supplied point lies on it. The advertised name must be one
+                // the provider can resolve to curve parameters; anything else is rejected
+                if (!CryptoIntegration.getProvider().getSupportedECCurves().contains(crv)) {
+                    throw new RuntimeException("Unsupported curve");
+                }
+                name = crv;
+        }
+
+        // createECParams returns null for a curve the active provider does not support
+        ECParameterSpec params = CryptoIntegration.getProvider().createECParams(name);
+        if (params == null) {
+            throw new RuntimeException("Unsupported curve");
         }
 
         try {
 
             ECPoint point = new ECPoint(x, y);
-            ECParameterSpec params = CryptoIntegration.getProvider().createECParams(name);
             ECPublicKeySpec pubKeySpec = new ECPublicKeySpec(point, params);
 
             KeyFactory kf = CryptoIntegration.getProvider().getKeyFactory("ECDSA");

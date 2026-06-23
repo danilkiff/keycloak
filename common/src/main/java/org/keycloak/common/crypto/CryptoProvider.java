@@ -15,6 +15,8 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.CollectionCertStoreParameters;
 import java.security.spec.ECParameterSpec;
+import java.util.Collections;
+import java.util.Set;
 import java.util.stream.Stream;
 import javax.crypto.Cipher;
 import javax.crypto.NoSuchPaddingException;
@@ -78,10 +80,12 @@ public interface CryptoProvider {
 
 
     /**
-     * Create the param spec for the EC curve
+     * Create the param spec for the EC curve.
      *
-     * @param curveName
-     * @return
+     * @param curveName the curve name
+     * @return the EC parameters, or {@code null} if {@code curveName} is not a curve this provider
+     *         supports. Implementations must not throw for an unknown curve; a provider that does not
+     *         implement EC at all may throw {@link UnsupportedOperationException}.
      */
     ECParameterSpec createECParams(String curveName);
 
@@ -135,5 +139,22 @@ public interface CryptoProvider {
      */
     default String[] getSupportedRsaKeySizes() {
         return new String[] {"1024", "2048", "3072", "4096"};
+    }
+
+    /**
+     * EC curve names (as used in the JWK {@code crv} member) that this provider supports for parsing
+     * keys, beyond the standard JOSE curves {@code P-256}/{@code P-384}/{@code P-521}.
+     * <p>
+     * The JWK parser uses this as an explicit allow-list when it encounters a non-standard
+     * {@code crv}: a curve not advertised here is rejected. The default is empty, so core adds no
+     * curves on its own; the supported set comes from whichever provider is active.
+     * <p>
+     * Each name returned here is used directly both as the JWK {@code crv} value and as the input to
+     * {@link #createECParams(String)}; an advertised name that {@code createECParams} cannot resolve
+     * is rejected as an unsupported curve. A provider that advertises a curve owns its validation,
+     * including checking that the supplied public-key point lies on that curve.
+     */
+    default Set<String> getSupportedECCurves() {
+        return Collections.emptySet();
     }
 }
